@@ -2,7 +2,7 @@
 
 namespace App\Jobs;
 
-use App\Models\ChordAudioCache;
+use App\Models\Chord;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -23,36 +23,35 @@ class GenerateChordAudioJob implements ShouldQueue
      * Create a new job instance.
      */
     public function __construct(
-        public string $text,
+        public Chord $chord,
         public string $voice = 'en-US-AriaNeural',
     ) {}
-
 
     /**
      * Execute the job.
      */
     public function handle(): void
     {
-        $hash = ChordAudioCache::hashFor($this->text, $this->voice);
-
-        // Cache hit: skip generate ulang
-        if (ChordAudioCache::where('text_hash', $hash)->exists()) {
-            Log::info("Chord audio cache hit: {$this->text}");
+        // Jika file audio sudah ada di storage, skip generate ulang
+        if ($this->chord->file_path && Storage::disk('public')->exists($this->chord->file_path)) {
+            Log::info("Chord audio hit (sudah ada): {$this->chord->name}");
             return;
         }
 
-        $filename = $hash . '.mp3';
+        $text = $this->chord->pronunciation ?: $this->chord->name;
+        $safeName = preg_replace('/[^a-zA-Z0-9_-]/', '_', strtolower($this->chord->name));
+        $filename = "chord_{$this->chord->id}_{$safeName}.mp3";
         $relativePath = 'chord-audio/' . $filename;
         $absolutePath = Storage::disk('public')->path($relativePath);
 
-        // pastikan folder ada
+        // Pastikan folder direktori tersedia
         Storage::disk('public')->makeDirectory('chord-audio');
 
         $process = new Process(
             [
                 config('services.python.bin'),
                 base_path('scripts/edge_tts_stream.py'),
-                $this->text,
+                $text,
                 $this->voice,
             ],
             base_path(),
@@ -63,20 +62,18 @@ class GenerateChordAudioJob implements ShouldQueue
         $process->run();
 
         if (! $process->isSuccessful()) {
-            Log::error("TTS generation failed for '{$this->text}': " . $process->getErrorOutput());
+            Log::error("TTS generation failed for '{$this->chord->name}': " . $process->getErrorOutput());
             throw new \RuntimeException('TTS generation failed: ' . $process->getErrorOutput());
         }
 
         file_put_contents($absolutePath, $process->getOutput());
 
-        ChordAudioCache::create([
-            'text_hash' => $hash,
-            'text'      => $this->text,
-            'voice'     => $this->voice,
+        // Update langsung file_path ke tabel chords
+        $this->chord->update([
             'file_path' => $relativePath,
         ]);
 
-        Log::info("Chord audio generated: {$this->text} -> {$relativePath}");
+        Log::info("Chord audio generated: {$this->chord->name} -> {$relativePath}");
     }
 
     private function pythonEnv(): array

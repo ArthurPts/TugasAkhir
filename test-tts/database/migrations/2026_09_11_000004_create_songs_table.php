@@ -20,6 +20,7 @@ return new class extends Migration
             $table->smallInteger('bpm')->default(80);
             $table->integer('time_signature_numerator')->nullable();
             $table->integer('time_signature_denominator')->nullable();
+            $table->string('file_path')->nullable(); // Relative path audio lagu/backing track di disk 'public'
             $table->enum('visibility', ['public', 'private'])->default('private');
             $table->timestamps();
         });

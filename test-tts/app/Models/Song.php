@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\Storage;
 
 class Song extends Model
 {
@@ -26,8 +27,17 @@ class Song extends Model
         'bpm',
         'time_signature_numerator',
         'time_signature_denominator',
+        'file_path',
         'visibility',
     ];
+
+    /**
+     * URL file audio lagu/backing track di disk 'public'.
+     */
+    public function getAudioUrlAttribute(): ?string
+    {
+        return $this->file_path ? Storage::disk('public')->url($this->file_path) : null;
+    }
 
     /**
      * The user who uploaded this song.

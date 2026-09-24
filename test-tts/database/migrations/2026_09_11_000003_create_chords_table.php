@@ -15,6 +15,7 @@ return new class extends Migration
             $table->id();
             $table->string('name', 45)->unique();
             $table->string('pronunciation', 45);
+            $table->string('file_path')->nullable(); // Relative path audio speech di disk 'public'
         });
     }
 

@@ -3,8 +3,6 @@
 namespace Database\Seeders;
 
 use App\Models\Artist;
-use App\Models\Category;
-use App\Models\Song;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 
@@ -16,13 +14,6 @@ class DatabaseSeeder extends Seeder
     protected const USER_COUNT = 10;
 
     protected const ARTIST_COUNT = 5;
-
-    protected const SONG_COUNT = 20;
-
-    /**
-     * Max number of categories randomly attached to each song.
-     */
-    protected const MAX_CATEGORIES_PER_SONG = 3;
 
     /**
      * Run the database seeds.
@@ -46,17 +37,8 @@ class DatabaseSeeder extends Seeder
         User::factory(self::USER_COUNT)->create();
         Artist::factory(self::ARTIST_COUNT)->create();
 
-        // Each Song::factory()->create() call also builds its own
-        // section -> lyric line -> chord placement via the
-        // afterCreating hook on SongFactory.
-        Song::factory(self::SONG_COUNT)
-            ->create()
-            ->each(function (Song $song) {
-                $song->categories()->attach(
-                    Category::inRandomOrder()
-                        ->take(random_int(1, self::MAX_CATEGORIES_PER_SONG))
-                        ->pluck('id'),
-                );
-            });
+        // Seed 3 lagu Indonesia asli beserta lirik & chord placements.
+        // Kategori & chord sudah tersedia dari seeder di atas.
+        $this->call(SongSeeder::class);
     }
 }
