@@ -19,19 +19,19 @@
 
     <pre id="log"></pre>
 
-    {{-- <script src="/js/audio-engine.js"></script>
+    <script src="/js/audio-engine.js"></script>
     <script>
         const log = document.getElementById('log');
         const print = (msg) => log.textContent += msg + "\n";
 
         // Timeline sederhana: chord berganti tiap 4 beat, total 16 beat (4 bar)
         const timeline = [
-            { beat: 5,  text: 'C major' },
+            { beat: 5,  text: 'C Sharp Major' },
             { beat: 7,  text: 'D major' },
             // { beat: 9,  text: 'A minor' },
             // { beat: 13, text: 'G major' },
         ];
-        const totalBeats = 12;
+        const totalBeats = 8;
 
         (async () => {
             await window.audioEngine.init();
@@ -58,9 +58,9 @@
                 print('Selesai. Cek console untuk tabel timing presisi (gapBeforeBeat idealnya mendekati 0).');
             }, (totalBeats * (60 / bpm) + 1) * 1000);
         });
-    </script> --}}
+    </script>
 
-    <script src="/js/audio-engine.js"></script>
+    {{-- <script src="/js/audio-engine.js"></script>
     <script>
         const log = document.getElementById('log');
         const print = (msg) => log.textContent += msg + "\n";
@@ -106,7 +106,7 @@
             window.audioEngine.playSongTimeline(timeline, timelineData.song.bpm, totalBeats);
             print(`Playing "${timelineData.song.title}" at ${timelineData.song.bpm} BPM...`);
         });
-    </script>
+    </script> --}}
 </body>
 
 </html>
