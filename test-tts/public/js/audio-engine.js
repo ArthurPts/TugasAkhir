@@ -29,9 +29,13 @@ class AudioEngine {
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
         }
 
-        // Pastikan AudioContext aktif setelah user gesture
+        // Pastikan AudioContext aktif jika diizinkan browser
         if (this.audioContext.state === 'suspended') {
-            await this.audioContext.resume();
+            try {
+                await this.audioContext.resume();
+            } catch (e) {
+                // Diabaikan jika browser memerlukan user gesture langsung; akan di-resume saat Play
+            }
         }
 
         // Muat suara click metronom bawaan jika belum ada
@@ -93,10 +97,11 @@ class AudioEngine {
      * - Suara chord speech dimulai beberapa saat sebelum beat agar selesai tepat saat chord berganti
      *
      * @param {Array} timeline Daftar marker chord: [{ beat: 0, text: 'C Major' }, ...]
-     * @param {number} bpm Tempo lagu
+     * @param {number} bpm Tempo lagu yang dimainkan
      * @param {number} totalBeats Total ketukan yang akan dimainkan
+     * @param {number|null} originalBpm BPM asli lagu untuk sinkronisasi backing track
      */
-    playSongTimeline(timeline, bpm, totalBeats) {
+    playSongTimeline(timeline, bpm, totalBeats, originalBpm = null) {
         this.stop(); // Hentikan playback sebelumnya jika ada
 
         this.bpm = bpm;
@@ -116,6 +121,9 @@ class AudioEngine {
         if (this.buffers['song']) {
             const songSource = this.audioContext.createBufferSource();
             songSource.buffer = this.buffers['song'];
+            if (originalBpm && originalBpm > 0) {
+                songSource.playbackRate.value = bpm / originalBpm;
+            }
             songSource.connect(this.audioContext.destination);
             songSource.start(startTime);
             this.activeSources.push(songSource);

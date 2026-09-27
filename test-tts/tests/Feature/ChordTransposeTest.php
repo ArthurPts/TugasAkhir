@@ -164,7 +164,9 @@ it('transpose satu lagu penuh mengembalikan seluruh marker ter-transpose tanpa m
         ->assertJsonPath('markers.0.chord_text', 'B Minor')
         ->assertJsonPath('markers.1.section', 'Chorus')
         ->assertJsonPath('markers.1.chord_name', 'C')
-        ->assertJsonPath('markers.1.chord_text', 'C Major');
+        ->assertJsonPath('markers.1.chord_text', 'C Major')
+        ->assertJsonPath('sections.0.name', 'Verse')
+        ->assertJsonPath('sections.1.name', 'Chorus');
 });
 
 it('menyajikan halaman chord sheet player untuk lagu', function () {
@@ -183,7 +185,9 @@ it('menyajikan halaman chord sheet player untuk lagu', function () {
 
     $response->assertOk()
         ->assertSee('Chord Sheet Player')
-        ->assertSee((string) $song->id);
+        ->assertSee((string) $song->id)
+        ->assertSee('id="bpm-input"', false)
+        ->assertDontSee('id="preload"', false);
 });
 
 function createPlacementGraph(string $chordName, string $pronunciation): ChordPlacement

@@ -16,7 +16,6 @@ return new class extends Migration
             $table->foreignId('lyric_line_id')->constrained('lyric_lines');
             $table->foreignId('chord_id')->constrained('chords');
             $table->integer('position');
-            $table->decimal('start_time', 8, 3)->nullable();
             $table->integer('start_beat')->nullable();
         });
     }

@@ -1,0 +1,783 @@
+AGENTIC AI BUILD PLAN
+Perbaikan Sistem Penyusun Komposisi Lagu Gitar — Fase 1-6
+===========================================================
+
+TUJUAN
+------
+Perbaiki dan lanjutkan implementasi project berdasarkan hasil audit kode terhadap:
+- SPESIFIKASI_SISTEM
+- TAHAP_1-4
+- FASE_5-6
+
+Kondisi saat ini:
+- Fondasi player/audio Tahap 1-4 relatif sudah sesuai.
+- Fase 5-6 masih banyak yang belum diimplementasikan.
+- Terdapat beberapa inkonsistensi/bug yang harus dibereskan sebelum fitur baru dibangun.
+
+ATURAN UTAMA UNTUK AGENT
+------------------------
+1. Jangan menghapus atau merusak fitur Tahap 1-4 yang sudah bekerja.
+2. Jangan mengubah desain database hanya untuk mempermudah implementasi jika bertentangan dengan spesifikasi.
+3. Jangan membuat tabel cache audio per voice. `chords.file_path` tetap merepresentasikan satu voice/default voice.
+4. Voice TTS harus dikontrol server melalui `.env` / `config()`, bukan oleh client.
+5. `timeline()` dan `transpose()` harus tetap READ-ONLY terhadap data `chord_placements`.
+6. Jangan menyimpan hasil transpose ke database.
+7. Gunakan Laravel conventions:
+   - Form Request bila validasi sudah cukup kompleks.
+   - Service class untuk algoritma/domain logic.
+   - Policy/Middleware untuk authorization.
+   - DB transaction untuk operasi yang harus atomik.
+8. Jangan membuat endpoint baru yang bertentangan dengan route pada spesifikasi.
+9. Setelah setiap tahap, jalankan test/lint/route check yang relevan.
+10. Jangan melanjutkan ke tahap berikutnya jika acceptance criteria tahap aktif belum terpenuhi.
+11. Jika menemukan konflik antara kode dan spesifikasi, prioritaskan spesifikasi terbaru FASE_5-6, kecuali perubahan tersebut jelas merusak keputusan yang sudah ditetapkan.
+12. Jangan meminta user mengisi detail yang sebenarnya bisa diketahui dari kode/spec. Inspect repository terlebih dahulu.
+13. Jangan melakukan refactor besar-besaran yang tidak diperlukan untuk fitur aktif.
+14. Pertahankan backward compatibility terhadap response API yang sudah digunakan player, kecuali spesifikasi secara eksplisit mengubahnya.
+
+===========================================================
+PHASE 0 — AUDIT & BASELINE
+===========================================================
+
+Tujuan:
+Membuat baseline agar perubahan berikutnya dapat diverifikasi.
+
+Tugas:
+1. Inspect:
+   - migrations
+   - models
+   - controllers
+   - jobs
+   - services/support
+   - routes
+   - requests
+   - policies
+   - seeders/factories
+   - resources/views
+   - public/resources JS
+   - config/services.php
+   - .env.example
+   - existing tests
+2. Jalankan:
+   - migration status
+   - route list
+   - test suite
+   - build/frontend check bila tersedia
+3. Catat:
+   - route yang sudah ada
+   - route yang belum ada
+   - field database yang benar-benar tersedia
+   - relasi model
+   - response API yang sedang dipakai frontend
+4. Jangan mengubah kode pada fase ini kecuali perubahan sangat diperlukan untuk menjalankan baseline.
+
+Output:
+- Baseline test result.
+- Daftar route.
+- Daftar masalah aktual.
+- Daftar file yang akan terdampak.
+
+Acceptance criteria:
+- Agent memahami struktur repository sebelum melakukan perubahan.
+- Tidak ada asumsi bahwa file/route/service sudah tersedia tanpa memeriksanya.
+
+===========================================================
+PHASE 1 — FIX BLOCKING INCONSISTENCIES
+===========================================================
+
+Tujuan:
+Membersihkan bug yang dapat menyebabkan implementasi/test Fase 5-6 gagal.
+
+1. FIX `start_time`
+
+Masalah:
+`chord_placements` hanya memiliki:
+- position
+- start_beat
+
+Tetapi kode menggunakan:
+- ChordPlacement::$fillable -> start_time
+- SongFactory -> start_time
+- ChordPlacementController store/update -> start_time
+
+Tugas:
+- Hapus penggunaan `start_time` jika tidak termasuk desain final.
+- Sesuaikan `$fillable`.
+- Hapus `start_time` dari factory.
+- Hapus validasi/request field `start_time`.
+- Pastikan controller hanya menggunakan `position` dan/atau `start_beat` sesuai spesifikasi.
+- Jangan menambahkan kolom `start_time` hanya untuk membuat kode lama lolos.
+
+2. FIX TTS VOICE CONFIGURATION
+
+Masalah:
+Job/controller menerima `voice` dari client dan memakai hardcoded:
+`en-US-AriaNeural`
+
+Desain final:
+- satu voice tetap
+- dikonfigurasi dari `.env`
+- tidak ada parameter voice per request
+
+Tugas:
+- Pastikan `config/services.php` memiliki konfigurasi TTS default voice.
+- Tambahkan/pertahankan `.env.example`, misalnya:
+  TTS_DEFAULT_VOICE=...
+- `GenerateChordAudioJob` mengambil voice dari config.
+- Hapus parameter `$voice` dari constructor job jika tidak diperlukan.
+- Hapus `voice` dari query/request client.
+- Pastikan semua pemanggilan job memakai configured voice.
+- Jangan membuat variasi file audio berdasarkan voice request.
+
+3. FIX TIME SIGNATURE FALLBACK
+
+Aturan:
+`time_signature_numerator` harus fallback ke 4 bila null.
+
+Tugas:
+- Di `buildTimelineResponse()` gunakan fallback 4.
+- Audit semua kalkulasi beat/bar yang memakai numerator.
+- Pastikan fallback diterapkan konsisten.
+- Jangan mengubah nilai database secara otomatis hanya karena null.
+
+Acceptance criteria:
+- Factory tidak lagi menghasilkan `start_time`.
+- Request chord placement dengan `start_time` tidak menjadi bagian API final.
+- Tidak ada SQL query yang mengakses kolom `start_time`.
+- Client tidak bisa memilih voice TTS.
+- Voice berasal dari config.
+- Timeline selalu memiliki numerator valid, minimal fallback 4.
+- Existing Tahap 1-4 tests tetap pass.
+
+===========================================================
+PHASE 2 — DOMAIN SERVICE §5.1
+COORDINATE CONVERSION + COLLISION
+===========================================================
+
+Tujuan:
+Implementasikan inti Fase 5b sebelum membuat UI editor.
+
+Buat service khusus, misalnya:
+`ChordPlacementCoordinateService`
+atau nama domain-equivalent yang konsisten dengan repository.
+
+Tanggung jawab:
+1. Konversi:
+   - position -> start_beat
+   - start_beat -> position
+2. Validasi input.
+3. Collision detection.
+4. Force override sesuai spesifikasi.
+5. Jangan mengubah data secara otomatis tanpa aturan yang ditentukan.
+
+Aturan:
+- Tentukan satu definisi resmi hubungan `position` dan `start_beat` berdasarkan spesifikasi.
+- Jangan membuat rumus baru berdasarkan asumsi.
+- Perhitungkan time signature/bar bila memang diwajibkan spesifikasi.
+- Gunakan integer/decimal precision yang konsisten.
+- Hindari floating point comparison yang rawan error bila domain membutuhkan presisi.
+
+Collision:
+- Jika placement baru bertabrakan dengan placement lain pada posisi/beat yang sama sesuai definisi spesifikasi:
+  return HTTP 409 Conflict.
+- Response harus memberi informasi yang cukup kepada client untuk mengetahui collision.
+- Jika `force` diperbolehkan:
+  - hanya lakukan override jika eksplisit diminta client
+  - jangan mengaktifkan force secara default
+- Pastikan placement milik lagu yang sama.
+- Saat update, exclude record dirinya sendiri dari collision query.
+
+Concurrency:
+- Gunakan transaction bila operasi melibatkan read-check-write.
+- Bila diperlukan oleh DB, pertimbangkan locking untuk mencegah race condition.
+
+Controller:
+`ChordPlacementController@store`
+`ChordPlacementController@update`
+harus memakai service tersebut.
+
+Acceptance criteria:
+- POST placement menggunakan coordinate yang ditentukan spec dapat menghasilkan coordinate pasangan secara otomatis.
+- PATCH placement juga melakukan konversi.
+- Collision menghasilkan 409.
+- `force` bekerja hanya jika eksplisit.
+- Tidak ada duplicate placement yang lolos hanya karena request datang bersamaan.
+- Unit test tersedia untuk:
+  - conversion
+  - collision
+  - update sendiri
+  - force
+  - invalid coordinate
+
+===========================================================
+PHASE 3 — M3 SIMPLE EDITOR / DRAG-DROP
+===========================================================
+
+Tujuan:
+Menyediakan editor sederhana untuk membuat/memindahkan chord placement.
+
+Frontend:
+- Inspect existing Blade/layout/component architecture.
+- Buat modul JS khusus editor; jangan mencampur logic editor ke audio player jika tidak perlu.
+
+Fitur:
+1. Menampilkan chord placement pada timeline.
+2. Drag chord.
+3. Drop chord ke posisi baru.
+4. Create placement.
+5. Update placement.
+6. Hapus placement bila spesifikasi mengharuskan.
+7. Menampilkan feedback collision 409.
+8. Jika server meminta force, tampilkan konfirmasi/aksi yang eksplisit.
+9. Jangan mengubah audio engine secara langsung ketika hanya mengedit data.
+
+API:
+- Gunakan endpoint placement yang sudah ada setelah Phase 2 diperbaiki.
+- Jangan membuat client-side coordinate conversion sebagai source of truth.
+- Client boleh menghitung preview, tetapi server tetap authoritative.
+
+Acceptance criteria:
+- User dapat membuat chord placement.
+- User dapat drag chord.
+- Server menyimpan coordinate final.
+- Collision ditampilkan sebagai error yang dapat dipahami.
+- Tidak ada refresh halaman wajib untuk setiap drag jika API/frontend architecture mendukung.
+- Player Tahap 1-4 tetap bekerja.
+
+===========================================================
+PHASE 4 — M4 BEAT EDITOR + AUTO-CONTINUATION
+===========================================================
+
+Tujuan:
+Implementasi Beat Editor sesuai §5.2.
+
+Konsep:
+- Render grid berdasarkan beat.
+- Grid mengikuti time signature.
+- Setiap bar memiliki jumlah beat sesuai numerator.
+- Setelah bar penuh, grid berlanjut ke bar berikutnya.
+- Beat placement tetap sinkron dengan `start_beat`.
+
+Tugas:
+1. Buat beat-grid renderer.
+2. Gunakan time signature numerator dengan fallback 4.
+3. Tampilkan beat/bar number.
+4. Tampilkan chord pada beat yang sesuai.
+5. Support create/move placement.
+6. Auto-continuation:
+   - ketika chord ditempatkan pada beat terakhir, grid tetap menyediakan bar berikutnya sesuai kebutuhan UI.
+7. Pastikan tidak ada hardcoded 4-beat UI bila numerator berbeda.
+
+Acceptance criteria:
+- 4/4 menghasilkan 4 beat per bar.
+- 3/4 menghasilkan 3 beat per bar.
+- Beat berikutnya tetap dapat dibuat tanpa manual membuat bar.
+- Chord placement visual konsisten dengan `start_beat`.
+- Coordinate server tetap authoritative.
+
+===========================================================
+PHASE 5 — §5.4 COUNT-IN + PLAYER TIMING
+===========================================================
+
+Tujuan:
+Memperbaiki timing player agar count-in benar-benar terjadi sebelum lagu.
+
+Masalah saat ini:
+Metronom, chord dan backing track mulai bersamaan.
+
+Implementasi:
+1. Definisikan:
+   - countInBars
+   - countInBeats
+   - songStartTime
+2. Gunakan:
+   `countInBeats = countInBars * time_signature_numerator`
+3. Hitung durasi beat:
+   `60 / BPM`
+4. Jadwalkan metronom count-in terlebih dahulu.
+5. `songStartTime` terjadi setelah count-in selesai.
+6. Jadwalkan:
+   - backing track
+   - chord TTS
+   - metronome song beats
+   berdasarkan `songStartTime`.
+7. Jangan menggunakan setTimeout sebagai satu-satunya mekanisme timing presisi bila Web Audio scheduling dapat digunakan.
+8. Pastikan semua source menggunakan shared audio clock.
+9. Pastikan pause/resume/stop tetap konsisten jika fitur tersebut sudah ada.
+
+TTS:
+- Jangan generate audio baru karena client mengirim voice.
+- Gunakan audio hasil voice default configured.
+
+Acceptance criteria:
+- Count-in terjadi satu bar sebelum chord/backing track.
+- Untuk 4/4 dan BPM 120, count-in berlangsung 2 detik.
+- Untuk 3/4 dan BPM 120, count-in berlangsung 1.5 detik.
+- Chord pertama dimulai pada beat 1 setelah count-in.
+- Backing track tidak mulai sebelum songStartTime.
+- Metronome tidak kehilangan sinkronisasi.
+
+===========================================================
+PHASE 6 — M6 BACKING TRACK UPLOAD / DELETE
+===========================================================
+
+Tujuan:
+Implementasi endpoint resmi backing track.
+
+Endpoint target:
+POST   /api/songs/{song}/audio
+DELETE /api/songs/{song}/audio
+
+Tugas:
+1. Buat controller khusus bila sesuai architecture.
+2. POST:
+   - multipart file upload
+   - validasi MIME/type
+   - validasi ukuran
+   - simpan menggunakan Laravel Storage
+   - update `songs.file_path`
+3. DELETE:
+   - hapus file dari storage
+   - set `songs.file_path` menjadi null
+4. Jangan menerima `file_path` sebagai arbitrary string dari client melalui song create/update bila bertentangan dengan spesifikasi.
+5. Pastikan file lama dihapus saat diganti agar tidak meninggalkan orphan files.
+6. Gunakan authorization yang sesuai setelah Phase 9 Auth/Policy tersedia.
+7. Pastikan response memberikan `audio_url` atau informasi file yang dibutuhkan player.
+
+Security:
+- Jangan menggunakan filename mentah sebagai path storage.
+- Jangan menerima executable file.
+- Gunakan storage disk yang dikonfigurasi.
+- Jangan expose filesystem path internal.
+
+Acceptance criteria:
+- Upload berhasil.
+- File tersimpan di storage.
+- `songs.file_path` benar.
+- Player dapat mengambil `audio_url`.
+- Delete menghapus file dan DB reference.
+- Replace file tidak meninggalkan file lama.
+- Invalid file ditolak.
+
+===========================================================
+PHASE 7 — M2 SECTION & LYRIC LINE CRUD
+===========================================================
+
+Tujuan:
+Implementasi API section dan lyric line.
+
+Endpoint target:
+GET/POST  /api/songs/{song}/sections
+GET/PATCH/DELETE /api/sections/{section}
+
+GET/POST  /api/sections/{section}/lines
+GET/PATCH/DELETE /api/sections/{section}/lines/{line}
+
+Gunakan route final sesuai spesifikasi jika detail path berbeda.
+
+Tugas:
+1. Buat controller SectionController.
+2. Buat controller LyricLineController.
+3. Buat Form Request bila diperlukan.
+4. Validasi foreign key/ownership.
+5. Pastikan section hanya bisa dimodifikasi oleh user yang berhak.
+6. Pastikan lyric line hanya bisa dibuat pada section yang benar.
+7. Gunakan ordering/index sesuai schema/spec.
+8. Pastikan timeline dapat mengembalikan sections dan lines secara konsisten.
+
+Acceptance criteria:
+- CRUD section berjalan.
+- CRUD lyric line berjalan.
+- Invalid parent relationship ditolak.
+- Unauthorized access ditolak.
+- Timeline menampilkan struktur section/line yang benar.
+
+===========================================================
+PHASE 8 — M5 CHORD LIBRARY / CUSTOM CHORD
+===========================================================
+
+Tujuan:
+Implementasi pustaka chord.
+
+Endpoint:
+GET  /api/chords
+POST /api/chords
+
+Tugas:
+1. Buat ChordController.
+2. GET:
+   - list chord
+   - support search/filter bila spesifikasi meminta.
+3. POST:
+   - buat custom chord.
+   - validasi text/name/notation sesuai schema.
+4. Pastikan `file_path` TTS tidak boleh dipalsukan client bila audio harus generated server-side.
+5. Integrasikan GenerateChordAudioJob:
+   - gunakan TTS_DEFAULT_VOICE
+   - generate audio sesuai pipeline existing
+6. Hindari duplicate chord yang seharusnya dianggap sama, sesuai aturan domain.
+7. Tetap gunakan `ChordTransposer` untuk transpose text/chord jika diperlukan.
+
+Acceptance criteria:
+- GET chord bekerja.
+- POST custom chord bekerja.
+- Audio generation menggunakan voice config.
+- Tidak ada parameter voice dari client.
+- Chord library dapat dipakai editor.
+
+===========================================================
+PHASE 9 — M1 CATALOG + SEARCH + VISIBILITY
+===========================================================
+
+Tujuan:
+Memperbaiki katalog lagu agar sesuai M1.
+
+`SongController@index` harus mendukung:
+- `search`
+- `category`
+- `artist_id`
+- `visibility`
+
+Aturan guest:
+- Default hanya public songs.
+- Jangan bocorkan private songs melalui search/filter/pagination.
+
+Tugas:
+1. Implement query builder.
+2. Tambahkan filter hanya bila parameter tersedia.
+3. Pastikan kombinasi filter bekerja.
+4. Pastikan pagination tetap konsisten.
+5. Eager load relation yang diperlukan.
+6. Hindari N+1 query.
+7. Setelah auth tersedia, owner/admin dapat melihat data sesuai policy.
+
+Acceptance criteria:
+- `GET /api/songs` guest hanya public secara default.
+- Search mencari field yang ditentukan spec.
+- Category filter bekerja.
+- Artist filter bekerja.
+- Visibility filter tidak membypass authorization.
+- Pagination tetap berjalan.
+
+===========================================================
+PHASE 10 — FASE 6 AUTHENTICATION
+===========================================================
+
+Tujuan:
+Implementasi authentication berbasis Sanctum.
+
+Target:
+- register
+- login
+- logout
+- authenticated `/api/*`
+- `/api/me`
+- `/api/me/quota`
+
+Tugas:
+1. Inspect User model dan migration.
+2. Install/configure Sanctum jika belum ada.
+3. Buat AuthController.
+4. Register:
+   - validate credentials
+   - hash password
+   - login/token sesuai arsitektur Sanctum.
+5. Login:
+   - validate credentials
+   - issue session/token.
+6. Logout:
+   - revoke current token/session.
+7. Protect routes dengan `auth:sanctum`.
+8. Jangan langsung melindungi endpoint public yang memang harus dapat diakses guest.
+9. Pastikan API error 401 konsisten.
+
+Acceptance criteria:
+- Register berhasil.
+- Login berhasil.
+- Protected route menolak guest dengan 401.
+- Authenticated user dapat mengakses `/api/me`.
+- Logout membuat credential/token tidak dapat digunakan lagi.
+
+===========================================================
+PHASE 11 — ROLE OWNER / ADMIN + POLICY
+===========================================================
+
+Tujuan:
+Authorization berbasis role dan ownership.
+
+Role minimum:
+- Owner
+- Admin
+
+Tugas:
+1. Tentukan field role berdasarkan schema yang sudah ada.
+2. Buat Policies untuk:
+   - Song
+   - ChordPlacement
+   - Section
+   - LyricLine
+   - Audio/backing track
+   - Chord custom library bila diperlukan.
+3. Owner:
+   - dapat mengelola resource miliknya sesuai spec.
+4. Admin:
+   - dapat melakukan operasi administratif sesuai spec.
+5. Guest:
+   - hanya public/read endpoints yang memang diperbolehkan.
+6. Jangan hanya mengandalkan hidden button di frontend.
+7. Authorization wajib diverifikasi di backend.
+
+Acceptance criteria:
+- Unauthorized mutation menghasilkan 403.
+- Owner dapat mengubah resource miliknya.
+- User tidak dapat mengubah resource user lain.
+- Admin memiliki permission sesuai spesifikasi.
+- Guest tidak dapat mutation protected.
+
+===========================================================
+PHASE 12 — QUOTA
+===========================================================
+
+Tujuan:
+Implementasi quota Fase 6.
+
+Tugas:
+1. Cari aturan quota final pada spesifikasi.
+2. Jangan mengarang angka quota jika tidak tertulis.
+3. Implementasi counter/usage sesuai domain yang ditentukan.
+4. Endpoint:
+   GET /api/me/quota
+5. Pastikan quota check dilakukan server-side.
+6. Jika operasi melebihi quota:
+   - gunakan status code dan error format sesuai spec.
+7. Hindari race condition pada quota increment/decrement.
+
+Acceptance criteria:
+- User dapat melihat quota.
+- Quota dihitung sesuai aturan.
+- Limit tidak dapat dibypass dengan request paralel.
+- Error quota konsisten.
+
+===========================================================
+PHASE 13 — INTEGRATION / REGRESSION
+===========================================================
+
+Tujuan:
+Memastikan Fase 1-6 terintegrasi.
+
+TEST MATRIX
+-----------
+
+A. Database
+- migrations fresh
+- migrations rollback
+- seed
+- factory
+
+B. Chord
+- CRUD/list
+- TTS generation
+- default voice
+- transpose
+- audio file
+
+C. Placement
+- position conversion
+- start_beat conversion
+- collision
+- force
+- update
+- delete jika tersedia
+
+D. Editor
+- simple drag/drop
+- beat grid
+- time signature
+- auto continuation
+
+E. Player
+- count-in
+- metronome
+- chord TTS
+- backing track
+- synchronized start
+- transpose read-only
+- no DB mutation from timeline/transpose
+
+F. Song
+- catalog
+- search
+- category
+- artist
+- visibility
+- pagination
+
+G. Sections/Lyrics
+- CRUD
+- timeline integration
+
+H. Authentication
+- register
+- login
+- logout
+- protected route
+- owner/admin
+
+I. Quota
+- read quota
+- consume quota
+- limit exceeded
+
+===========================================================
+PHASE 14 — API CONTRACT VERIFICATION
+===========================================================
+
+Sebelum dianggap selesai, agent harus:
+1. Generate/inspect route list.
+2. Pastikan endpoint sesuai spesifikasi.
+3. Pastikan HTTP method benar.
+4. Pastikan validation error format konsisten.
+5. Pastikan 401 vs 403 vs 404 vs 409 digunakan dengan benar:
+   - 401 = belum authenticated
+   - 403 = authenticated tetapi tidak berhak
+   - 404 = resource tidak ditemukan/tidak boleh diekspos sesuai desain
+   - 409 = collision/conflict
+6. Pastikan response JSON tidak mengandung:
+   - password
+   - token yang tidak seharusnya dikembalikan
+   - filesystem internal path
+   - data private yang bocor ke guest.
+
+===========================================================
+PHASE 15 — CODE QUALITY / CLEANUP
+===========================================================
+
+Setelah semua feature selesai:
+
+1. Cari:
+   - `start_time`
+   - hardcoded TTS voice
+   - request/query `voice`
+   - direct client `file_path`
+   - `time_signature_numerator` tanpa fallback
+   - duplicate coordinate conversion logic
+   - duplicate authorization logic
+2. Hapus dead code.
+3. Hapus route/controller yang obsolete hanya jika memang sudah digantikan.
+4. Pastikan tidak ada dua implementation berbeda untuk aturan yang sama.
+5. Pastikan domain logic berada di service, bukan tersebar di controller/JS.
+
+===========================================================
+IMPLEMENTATION ORDER — WAJIB
+===========================================================
+
+Urutan pengerjaan:
+
+0. Baseline audit
+1. Blocking fixes
+2. Coordinate conversion + collision
+3. M3 Simple Editor
+4. M4 Beat Editor
+5. Count-in / player timing
+6. M6 Backing Track
+7. M2 Sections/Lyrics
+8. M5 Chord Library
+9. M1 Catalog/Search
+10. Sanctum Auth
+11. Owner/Admin Policy
+12. Quota
+13. Integration tests
+14. API contract verification
+15. Cleanup
+
+Jangan mengerjakan Phase 10-12 terlebih dahulu hanya karena auth terlihat lebih mudah jika Phase 2-9 masih belum stabil, kecuali repository architecture memang mengharuskan auth lebih awal. Jika auth dikerjakan lebih awal, tetap pertahankan urutan dependency untuk fitur lain.
+
+===========================================================
+DEFINITION OF DONE
+===========================================================
+
+Project dianggap selesai hanya jika:
+
+[ ] Tidak ada referensi `start_time` yang tidak didukung schema.
+[ ] TTS voice tidak dapat dipilih client.
+[ ] TTS voice berasal dari config/.env.
+[ ] `time_signature_numerator` memiliki fallback 4 di semua kalkulasi relevan.
+[ ] position <-> start_beat conversion terimplementasi.
+[ ] Collision menghasilkan 409.
+[ ] Force hanya aktif bila eksplisit.
+[ ] M3 Simple Editor tersedia.
+[ ] M4 Beat Editor tersedia.
+[ ] Auto-continuation tersedia.
+[ ] Count-in benar-benar terjadi sebelum songStartTime.
+[ ] Metronome/chord/backing track sinkron.
+[ ] Backing track upload tersedia.
+[ ] Backing track delete tersedia.
+[ ] Section CRUD tersedia.
+[ ] Lyric Line CRUD tersedia.
+[ ] Chord library GET/POST tersedia.
+[ ] Catalog filter tersedia.
+[ ] Guest tidak dapat melihat private songs secara default.
+[ ] Sanctum authentication tersedia.
+[ ] Protected API menggunakan auth:sanctum.
+[ ] Owner/Admin authorization tersedia.
+[ ] Quota endpoint tersedia.
+[ ] Quota enforcement server-side tersedia.
+[ ] Timeline tetap read-only.
+[ ] Transpose tetap read-only.
+[ ] Existing Tahap 1-4 functionality tetap bekerja.
+[ ] Migration fresh + seed berhasil.
+[ ] Test suite berhasil.
+[ ] Tidak ada critical SQL/runtime error.
+[ ] Tidak ada route duplicate/conflicting.
+[ ] Tidak ada security-sensitive data leakage.
+
+===========================================================
+AGENT BEHAVIOR SAAT MENEMUKAN MASALAH
+===========================================================
+
+Jika agent menemukan masalah tambahan:
+
+1. Jika blocker:
+   - berhenti pada tahap aktif
+   - jelaskan file, error, root cause
+   - perbaiki jika masih berada dalam scope tahap tersebut.
+
+2. Jika non-blocker:
+   - jangan melakukan refactor besar.
+   - catat sebagai follow-up.
+   - lanjutkan tahap aktif bila acceptance criteria tetap dapat diverifikasi.
+
+3. Jika spesifikasi ambigu:
+   - inspect kode/spec lain terlebih dahulu.
+   - cari implementation pattern yang sudah digunakan.
+   - jangan mengarang behavior baru.
+   - jika tetap ambigu dan berdampak pada database/API contract, minta keputusan manusia sebelum membuat breaking change.
+
+4. Setiap perubahan:
+   - tampilkan ringkasan file yang diubah.
+   - tampilkan test yang dijalankan.
+   - tampilkan hasil test.
+   - jelaskan jika ada acceptance criterion yang belum dapat diverifikasi.
+
+===========================================================
+FINAL OUTPUT YANG DIMINTA DARI AGENT
+===========================================================
+
+Setelah selesai, berikan laporan:
+
+1. SUMMARY
+2. PHASES COMPLETED
+3. FILES CREATED
+4. FILES MODIFIED
+5. DATABASE CHANGES
+6. API ENDPOINTS ADDED/CHANGED
+7. FRONTEND FEATURES ADDED
+8. AUTHORIZATION CHANGES
+9. TTS CHANGES
+10. PLAYER/TIMING CHANGES
+11. TESTS RUN + RESULTS
+12. REMAINING ISSUES
+13. BREAKING CHANGES (jika ada)
+14. MANUAL TEST STEPS
+
+Jangan menyatakan project "selesai" bila ada item Definition of Done yang belum terpenuhi.

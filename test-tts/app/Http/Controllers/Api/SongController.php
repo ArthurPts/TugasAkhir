@@ -130,10 +130,15 @@ class SongController extends Controller
         ]);
 
         $markers = [];
+        $sectionsData = [];
         $dispatchedChordIds = [];
 
         foreach ($song->sections as $section) {
+            $linesData = [];
+
             foreach ($section->lyricLines as $line) {
+                $placementsData = [];
+
                 foreach ($line->chordPlacements as $placement) {
                     $originalChord = $placement->chord;
                     $chord = $originalChord;
@@ -148,13 +153,8 @@ class SongController extends Controller
 
                     $audio = $this->resolveAudio($chord, $voice, $dispatchMissingAudio, $dispatchedChordIds);
 
-                    $markers[] = [
+                    $placementItem = [
                         'chord_placement_id' => $placement->id,
-                        'section'            => $section->name,
-                        'section_sequence'   => $section->sequence,
-                        'line_id'            => $line->id,
-                        'line_number'        => $line->line_number,
-                        'line_content'       => $line->content,
                         'position'           => $placement->position,
                         'beat'               => $placement->start_beat,
                         'chord_name'         => $chord->name,
@@ -162,8 +162,33 @@ class SongController extends Controller
                         'audio_url'          => $audio['audio_url'],
                         'audio_ready'        => $audio['audio_ready'],
                     ];
+
+                    $placementsData[] = $placementItem;
+                    
+                    $markers[] = array_merge([
+                        'section'            => $section->name,
+                        'section_sequence'   => $section->sequence,
+                        'line_id'            => $line->id,
+                        'line_number'        => $line->line_number,
+                        'line_content'       => $line->content,
+                    ], $placementItem);
                 }
+                
+                $linesData[] = [
+                    'line_id'     => $line->id,
+                    'line_number' => $line->line_number,
+                    'content'     => $line->content,
+                    'placements'  => $placementsData,
+                ];
             }
+
+            $sectionsData[] = [
+                'id'       => $section->id,
+                'name'     => $section->name,
+                'sequence' => $section->sequence,
+                'lines'    => $linesData,
+            ];
+
         }
 
         usort($markers, static function (array $left, array $right): int {
@@ -181,6 +206,7 @@ class SongController extends Controller
                 'file_path'                  => $song->file_path,
                 'audio_url'                  => $song->audio_url,
             ],
+            'sections'        => $sectionsData,
             'markers'         => $markers,
             'all_audio_ready' => collect($markers)->every(fn($m) => $m['audio_ready']),
         ];
