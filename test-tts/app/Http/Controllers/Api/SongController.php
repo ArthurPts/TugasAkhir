@@ -14,17 +14,78 @@ use Illuminate\Support\Facades\Storage;
 class SongController extends Controller
 {
     /**
-     * Display a listing of the resource.
+     * Display a listing of the resource (M1 Catalog + Search + Visibility).
      */
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
-        return response()->json(
-            Song::with('artist')->latest()->paginate(20)
-        );
+        $user = $request->user();
+        $query = Song::with(['artist', 'categories'])->latest();
+
+        // 1. Aturan Visibility:
+        // Guest: hanya lagu public.
+        // User login: public + lagu private miliknya sendiri.
+        // Admin: semua lagu sesuai filter jika diminta.
+        if (! $user) {
+            $query->where('visibility', 'public');
+        } elseif ($user->role === 'admin') {
+            if ($visibility = $request->query('visibility')) {
+                $query->where('visibility', $visibility);
+            }
+        } else {
+            $targetVisibility = $request->query('visibility');
+            if ($targetVisibility === 'private') {
+                $query->where('user_id', $user->id)->where('visibility', 'private');
+            } elseif ($targetVisibility === 'public') {
+                $query->where('visibility', 'public');
+            } else {
+                $query->where(function ($q) use ($user) {
+                    $q->where('visibility', 'public')
+                      ->orWhere(function ($sub) use ($user) {
+                          $sub->where('user_id', $user->id)
+                              ->where('visibility', 'private');
+                      });
+                });
+            }
+        }
+
+        // Filter Lagu Milik User Sendiri (Lagu Saya)
+        if ($request->boolean('mine') && $user) {
+            $query->where('user_id', $user->id);
+        }
+
+        // 2. Filter Pencarian (Judul lagu atau Nama Artis)
+        if ($search = $request->query('search')) {
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'like', "%{$search}%")
+                  ->orWhereHas('artist', function ($aq) use ($search) {
+                      $aq->where('name', 'like', "%{$search}%");
+                  });
+            });
+        }
+
+        // 3. Filter Artist
+        if ($artistId = $request->query('artist_id')) {
+            $query->where('artist_id', $artistId);
+        }
+
+        // 4. Filter Kategori
+        if ($category = $request->query('category')) {
+            $query->whereHas('categories', function ($cq) use ($category) {
+                if (is_numeric($category)) {
+                    $cq->where('categories.id', $category);
+                } else {
+                    $cq->where('categories.name', $category);
+                }
+            });
+        }
+
+        $perPage = (int) $request->query('per_page', 20);
+
+        return response()->json($query->paginate($perPage));
     }
 
     /**
-     * Store a newly created resource in storage.
+     * Store a newly created resource in storage (with Quota enforcement).
      */
     public function store(Request $request): JsonResponse
     {
@@ -35,12 +96,19 @@ class SongController extends Controller
             'bpm'                         => ['required', 'integer', 'min:20', 'max:300'],
             'time_signature_numerator'    => ['nullable', 'integer'],
             'time_signature_denominator'  => ['nullable', 'integer'],
-            'file_path'                   => ['nullable', 'string', 'max:255'],
             'visibility'                  => ['required', 'in:public,private'],
         ]);
 
-        // Sementara fallback ke user pertama jika belum ada authentication
-        $validated['user_id'] = $request->user()?->id ?? \App\Models\User::first()->id;
+        $user = $request->user() ?? \App\Models\User::first();
+
+        // Quota check untuk role user (maksimal 10 lagu aktif)
+        if ($user && $user->role !== 'admin' && $user->songs()->count() >= 10) {
+            return response()->json([
+                'message' => 'Batas kuota upload lagu tercapai (maksimal 10 lagu aktif). Hapus lagu lama untuk menambah slot.',
+            ], 403);
+        }
+
+        $validated['user_id'] = $user?->id ?? 1;
 
         $song = Song::create($validated);
 
@@ -48,31 +116,33 @@ class SongController extends Controller
     }
 
     /**
-     * Display the specified resource.
+     * Display the specified resource (with visibility check).
      */
-    public function show(Song $song): JsonResponse
+    public function show(Request $request, Song $song): JsonResponse
     {
+        $this->authorizeViewSong($request, $song);
+
         return response()->json(
-            $song->load('artist', 'sections.lyricLines.chordPlacements.chord')
+            $song->load('artist', 'categories', 'sections.lyricLines.chordPlacements.chord')
         );
     }
 
     /**
      * Transpose seluruh lagu tanpa mengubah data chord placement di database.
      */
-    public function transpose(Song $song, Request $request): JsonResponse
+    public function transpose(Request $request, Song $song): JsonResponse
     {
+        $this->authorizeViewSong($request, $song);
+
         $validated = $request->validate([
             'steps'    => ['required', 'integer'],
-            'voice'    => ['nullable', 'string'],
             'dispatch' => ['nullable', 'boolean'],
         ]);
 
-        $voice = $validated['voice'] ?? 'en-US-AriaNeural';
         $dispatchMissingAudio = $request->boolean('dispatch', true);
 
         return response()->json(
-            $this->buildTimelineResponse($song, $voice, (int) $validated['steps'], $dispatchMissingAudio)
+            $this->buildTimelineResponse($song, (int) $validated['steps'], $dispatchMissingAudio)
         );
     }
 
@@ -81,6 +151,11 @@ class SongController extends Controller
      */
     public function update(Request $request, Song $song): JsonResponse
     {
+        $user = $request->user();
+        if ($user && $user->role !== 'admin' && $user->id !== $song->user_id) {
+            return response()->json(['message' => 'Tidak memiliki izin untuk mengubah lagu ini.'], 403);
+        }
+
         $validated = $request->validate([
             'title'                       => ['sometimes', 'string', 'max:75'],
             'artist_id'                   => ['sometimes', 'exists:artists,id'],
@@ -88,7 +163,6 @@ class SongController extends Controller
             'bpm'                         => ['sometimes', 'integer', 'min:20', 'max:300'],
             'time_signature_numerator'    => ['nullable', 'integer'],
             'time_signature_denominator'  => ['nullable', 'integer'],
-            'file_path'                   => ['nullable', 'string', 'max:255'],
             'visibility'                  => ['sometimes', 'in:public,private'],
         ]);
 
@@ -100,27 +174,41 @@ class SongController extends Controller
     /**
      * Remove the specified resource from storage.
      */
-    public function destroy(Song $song): JsonResponse
+    public function destroy(Request $request, Song $song): JsonResponse
     {
+        $user = $request->user();
+        if ($user && $user->role !== 'admin' && $user->id !== $song->user_id) {
+            return response()->json(['message' => 'Tidak memiliki izin untuk menghapus lagu ini.'], 403);
+        }
+
         $song->delete();
 
         return response()->json(null, 204);
     }
 
     /**
-     * Endpoint utama timeline lagu: gabungkan seluruh struktur lagu
-     * (section -> line -> chord placement) beserta URL audio chord dan audio lagu.
+     * Endpoint utama timeline lagu.
      */
-    public function timeline(Song $song, Request $request): JsonResponse
+    public function timeline(Request $request, Song $song): JsonResponse
     {
-        $voice = $request->query('voice', 'en-US-AriaNeural');
+        $this->authorizeViewSong($request, $song);
 
         return response()->json(
-            $this->buildTimelineResponse($song, $voice, 0, false)
+            $this->buildTimelineResponse($song, 0, false)
         );
     }
 
-    private function buildTimelineResponse(Song $song, string $voice, int $steps = 0, bool $dispatchMissingAudio = false): array
+    private function authorizeViewSong(Request $request, Song $song): void
+    {
+        if ($song->visibility === 'private') {
+            $user = $request->user();
+            if (! $user || ($user->role !== 'admin' && $user->id !== $song->user_id)) {
+                abort(404, 'Lagu tidak ditemukan.');
+            }
+        }
+    }
+
+    private function buildTimelineResponse(Song $song, int $steps = 0, bool $dispatchMissingAudio = false): array
     {
         $song->load([
             'sections' => fn ($query) => $query->orderBy('sequence'),
@@ -140,6 +228,10 @@ class SongController extends Controller
                 $placementsData = [];
 
                 foreach ($line->chordPlacements as $placement) {
+                    if ($placement->start_beat === null) {
+                        continue;
+                    }
+
                     $originalChord = $placement->chord;
                     $chord = $originalChord;
 
@@ -151,7 +243,7 @@ class SongController extends Controller
                         );
                     }
 
-                    $audio = $this->resolveAudio($chord, $voice, $dispatchMissingAudio, $dispatchedChordIds);
+                    $audio = $this->resolveAudio($chord, $dispatchMissingAudio, $dispatchedChordIds);
 
                     $placementItem = [
                         'chord_placement_id' => $placement->id,
@@ -201,10 +293,11 @@ class SongController extends Controller
                 'id'                         => $song->id,
                 'title'                      => $song->title,
                 'bpm'                        => $song->bpm,
-                'time_signature_numerator'   => $song->time_signature_numerator,
-                'time_signature_denominator' => $song->time_signature_denominator,
+                'time_signature_numerator'   => $song->time_signature_numerator ?? 4,
+                'time_signature_denominator' => $song->time_signature_denominator ?? 4,
                 'file_path'                  => $song->file_path,
                 'audio_url'                  => $song->audio_url,
+                'reference_audio_url'        => $song->audio_url,
             ],
             'sections'        => $sectionsData,
             'markers'         => $markers,
@@ -216,13 +309,13 @@ class SongController extends Controller
      * Periksa ketersediaan file audio chord.
      * Jika belum ada file audionya dan dispatch diaktifkan, dispatch job TTS.
      */
-    private function resolveAudio(Chord $chord, string $voice, bool $dispatchMissingAudio, array &$dispatchedChordIds): array
+    private function resolveAudio(Chord $chord, bool $dispatchMissingAudio, array &$dispatchedChordIds): array
     {
         $isReady = !empty($chord->file_path) && Storage::disk('public')->exists($chord->file_path);
 
         if (! $isReady && $dispatchMissingAudio && ! isset($dispatchedChordIds[$chord->id])) {
             $dispatchedChordIds[$chord->id] = true;
-            GenerateChordAudioJob::dispatch($chord, $voice);
+            GenerateChordAudioJob::dispatch($chord);
         }
 
         return [

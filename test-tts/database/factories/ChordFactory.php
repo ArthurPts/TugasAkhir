@@ -50,14 +50,14 @@ class ChordFactory extends Factory
      */
     public function definition(): array
     {
-        static $pool = null;
+        static $keys = null;
         static $cursor = 0;
-        $pool ??= collect(static::$chords)->shuffle();
+        if ($keys === null) {
+            $keys = array_keys(static::$chords);
+            shuffle($keys);
+        }
 
-        // Cycle through the curated list in order so unique('name') never
-        // collides. There are only as many real chords as in the list above,
-        // so don't factory more chords than that (count() them all instead).
-        $name = $pool->keys()->get($cursor % $pool->count());
+        $name = $keys[$cursor % count($keys)];
         $cursor++;
 
         return [

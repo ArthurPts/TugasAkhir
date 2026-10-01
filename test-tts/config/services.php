@@ -39,4 +39,8 @@ return [
         'bin' => env('PYTHON_BIN', 'python'),
     ],
 
+    'tts' => [
+        'default_voice' => env('TTS_DEFAULT_VOICE', 'en-US-AriaNeural'),
+    ],
+
 ];

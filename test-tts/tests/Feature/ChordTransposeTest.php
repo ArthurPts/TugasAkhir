@@ -23,7 +23,6 @@ it('transpose tidak mengubah chord_id yang tersimpan di database', function () {
 
     $response = $this->postJson("/api/chord-placements/{$placement->id}/transpose", [
         'steps' => 1,
-        'voice' => 'en-US-AriaNeural',
     ]);
 
     $response->assertOk()
@@ -109,7 +108,6 @@ it('transpose satu lagu penuh mengembalikan seluruh marker ter-transpose tanpa m
         'lyric_line_id' => $lateLine->id,
         'chord_id' => $firstChord->id,
         'position' => 3,
-        'start_time' => 1.500,
         'start_beat' => 4,
     ]);
 
@@ -117,7 +115,6 @@ it('transpose satu lagu penuh mengembalikan seluruh marker ter-transpose tanpa m
         'lyric_line_id' => $earlyLine->id,
         'chord_id' => $secondChord->id,
         'position' => 1,
-        'start_time' => 0.500,
         'start_beat' => 1,
     ]);
 
@@ -137,7 +134,6 @@ it('transpose satu lagu penuh mengembalikan seluruh marker ter-transpose tanpa m
 
     $response = $this->postJson("/api/songs/{$song->id}/transpose", [
         'steps' => 1,
-        'voice' => 'en-US-AriaNeural',
     ]);
 
     $response->assertOk()
@@ -224,7 +220,6 @@ function createPlacementGraph(string $chordName, string $pronunciation): ChordPl
         'lyric_line_id' => $line->id,
         'chord_id' => $chord->id,
         'position' => 0,
-        'start_time' => 0.000,
         'start_beat' => 0,
     ]);
 }

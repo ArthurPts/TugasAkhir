@@ -19,13 +19,17 @@ class GenerateChordAudioJob implements ShouldQueue
     public int $tries = 3;
     public int $timeout = 30;
 
+    public string $voice;
+
     /**
      * Create a new job instance.
      */
     public function __construct(
         public Chord $chord,
-        public string $voice = 'en-US-AriaNeural',
-    ) {}
+        ?string $voice = null,
+    ) {
+        $this->voice = $voice ?: config('services.tts.default_voice', 'en-US-AriaNeural');
+    }
 
     /**
      * Execute the job.

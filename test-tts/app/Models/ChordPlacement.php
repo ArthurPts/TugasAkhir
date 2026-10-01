@@ -25,7 +25,6 @@ class ChordPlacement extends Model
         'lyric_line_id',
         'chord_id',
         'position',
-        'start_time',
         'start_beat',
     ];
 

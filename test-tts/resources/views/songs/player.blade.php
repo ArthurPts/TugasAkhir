@@ -274,9 +274,19 @@
                 <button type="button" class="button button-secondary button-sm" id="transpose-up">+1</button>
                 <button type="button" class="button button-secondary button-sm" id="transpose-reset">Reset</button>
             </div>
+
+            <div class="control-group mutes-control">
+                <span class="control-label">Mute Track</span>
+                <button type="button" class="button button-secondary button-sm" id="mute-metronome" title="Mute/Unmute Metronom">Metronom: Aktif</button>
+                <button type="button" class="button button-secondary button-sm" id="mute-chord" title="Mute/Unmute Suara Chord">Chord: Aktif</button>
+                <button type="button" class="button button-secondary button-sm" id="mute-reference" title="Mute/Unmute Backing Track">Backing Track: Aktif</button>
+            </div>
         </div>
 
         <div id="status"></div>
+        <p style="font-size: 0.85rem; color: var(--muted); margin-top: -6px; margin-bottom: 12px;">
+            💡 <em>Tips:</em> Klik langsung pada chord di lembar lirik untuk melompat (jump) ke ketukan tersebut saat latihan.
+        </p>
         <div id="chordsheet"></div>
     </main>
 

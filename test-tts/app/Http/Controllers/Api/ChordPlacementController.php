@@ -2,10 +2,13 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Exceptions\PlacementCollisionException;
 use App\Http\Controllers\Controller;
 use App\Jobs\GenerateChordAudioJob;
 use App\Models\Chord;
 use App\Models\ChordPlacement;
+use App\Models\LyricLine;
+use App\Services\ChordPlacementCoordinateService;
 use App\Support\ChordTransposer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -16,36 +19,118 @@ class ChordPlacementController extends Controller
     /**
      * Store a newly created resource in storage.
      */
-    public function store(Request $request): JsonResponse
+    public function store(Request $request, ChordPlacementCoordinateService $coordinateService): JsonResponse
     {
         $validated = $request->validate([
             'lyric_line_id' => ['required', 'exists:lyric_lines,id'],
             'chord_id'      => ['required', 'exists:chords,id'],
-            'position'      => ['required', 'integer'],
-            'start_time'    => ['nullable', 'numeric'],
-            'start_beat'    => ['nullable', 'integer'],
+            'position'      => ['nullable', 'integer', 'min:0'],
+            'start_beat'    => ['nullable', 'integer', 'min:0'],
+            'force'         => ['nullable', 'boolean'],
         ]);
 
-        $placement = ChordPlacement::create($validated);
+        if (! isset($validated['position']) && ! isset($validated['start_beat'])) {
+            return response()->json([
+                'message' => 'Either position or start_beat must be provided.',
+                'errors' => [
+                    'position' => ['Either position or start_beat must be provided.'],
+                ],
+            ], 422);
+        }
 
-        return response()->json($placement->load('chord'), 201);
+        $line = LyricLine::with('section.song')->findOrFail($validated['lyric_line_id']);
+        $force = (bool) ($validated['force'] ?? false);
+
+        try {
+            $placement = $coordinateService->savePlacement(
+                $line,
+                (int) $validated['chord_id'],
+                isset($validated['position']) ? (int) $validated['position'] : null,
+                isset($validated['start_beat']) ? (int) $validated['start_beat'] : null,
+                $force
+            );
+        } catch (PlacementCollisionException $e) {
+            return response()->json([
+                'message' => 'Chord placement collision detected' . ($e->targetBeat !== null ? " at beat {$e->targetBeat}" : '') . '.',
+                'collision' => true,
+                'colliding_placement' => [
+                    'id'            => $e->collidingPlacement->id,
+                    'start_beat'    => $e->collidingPlacement->start_beat,
+                    'chord_id'      => $e->collidingPlacement->chord_id,
+                    'chord_name'    => $e->collidingPlacement->chord?->name,
+                    'lyric_line_id' => $e->collidingPlacement->lyric_line_id,
+                ],
+            ], 409);
+        }
+
+        // Dispatch TTS generation if audio not ready
+        $chord = $placement->chord;
+        if ($chord) {
+            $audioReady = !empty($chord->file_path) && Storage::disk('public')->exists($chord->file_path);
+            if (! $audioReady) {
+                GenerateChordAudioJob::dispatch($chord);
+            }
+        }
+
+        return response()->json($placement, 201);
     }
 
     /**
      * Update the specified resource in storage.
      */
-    public function update(Request $request, ChordPlacement $chordPlacement): JsonResponse
+    public function update(Request $request, ChordPlacement $chordPlacement, ChordPlacementCoordinateService $coordinateService): JsonResponse
     {
         $validated = $request->validate([
             'chord_id'   => ['sometimes', 'exists:chords,id'],
-            'position'   => ['sometimes', 'integer'],
-            'start_time' => ['nullable', 'numeric'],
-            'start_beat' => ['nullable', 'integer'],
+            'position'   => ['nullable', 'integer', 'min:0'],
+            'start_beat' => ['nullable', 'integer', 'min:0'],
+            'force'      => ['nullable', 'boolean'],
         ]);
 
-        $chordPlacement->update($validated);
+        $line = $chordPlacement->lyricLine()->with('section.song')->firstOrFail();
+        $chordId = (int) ($validated['chord_id'] ?? $chordPlacement->chord_id);
 
-        return response()->json($chordPlacement->load('chord'));
+        if (array_key_exists('start_beat', $validated) && ! array_key_exists('position', $validated)) {
+            $position = null;
+            $startBeat = $validated['start_beat'] !== null ? (int) $validated['start_beat'] : null;
+        } elseif (array_key_exists('position', $validated) && ! array_key_exists('start_beat', $validated)) {
+            $position = $validated['position'] !== null ? (int) $validated['position'] : null;
+            $startBeat = null;
+        } else {
+            $position = array_key_exists('position', $validated)
+                ? ($validated['position'] !== null ? (int) $validated['position'] : null)
+                : $chordPlacement->position;
+            $startBeat = array_key_exists('start_beat', $validated)
+                ? ($validated['start_beat'] !== null ? (int) $validated['start_beat'] : null)
+                : $chordPlacement->start_beat;
+        }
+
+        $force = (bool) ($validated['force'] ?? false);
+
+        try {
+            $placement = $coordinateService->savePlacement(
+                $line,
+                $chordId,
+                $position,
+                $startBeat,
+                $force,
+                $chordPlacement
+            );
+        } catch (PlacementCollisionException $e) {
+            return response()->json([
+                'message' => 'Chord placement collision detected' . ($e->targetBeat !== null ? " at beat {$e->targetBeat}" : '') . '.',
+                'collision' => true,
+                'colliding_placement' => [
+                    'id'            => $e->collidingPlacement->id,
+                    'start_beat'    => $e->collidingPlacement->start_beat,
+                    'chord_id'      => $e->collidingPlacement->chord_id,
+                    'chord_name'    => $e->collidingPlacement->chord?->name,
+                    'lyric_line_id' => $e->collidingPlacement->lyric_line_id,
+                ],
+            ], 409);
+        }
+
+        return response()->json($placement);
     }
 
     /**
@@ -63,15 +148,15 @@ class ChordPlacementController extends Controller
      * Kalau chord hasil transpose belum pernah ada di tabel `chords`,
      * dibuatkan barunya. Kalau audio-nya belum ter-cache, langsung
      * dispatch job generate — jadi frontend cukup poll `audio_ready`.
+     *
+     * Voice TTS dikontrol server via config, tidak dari client.
      */
     public function transpose(Request $request, ChordPlacement $chordPlacement): JsonResponse
     {
         $validated = $request->validate([
             'steps' => ['required', 'integer'],
-            'voice' => ['nullable', 'string'],
         ]);
 
-        $voice = $validated['voice'] ?? 'en-US-AriaNeural';
         $currentChord = $chordPlacement->chord;
 
         $newName = ChordTransposer::transpose($currentChord->name, $validated['steps']);
@@ -84,7 +169,7 @@ class ChordPlacementController extends Controller
         $audioReady = !empty($newChord->file_path) && Storage::disk('public')->exists($newChord->file_path);
 
         if (! $audioReady) {
-            GenerateChordAudioJob::dispatch($newChord, $voice);
+            GenerateChordAudioJob::dispatch($newChord);
         }
 
         return response()->json([

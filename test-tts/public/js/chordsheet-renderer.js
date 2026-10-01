@@ -96,7 +96,7 @@ function renderChordRowHtml(chordRowText, placements) {
         const markerId = placement.chord_placement_id || placement.id;
 
         html += escapeHtml(chordRowText.slice(cursor, pos));
-        html += `<span class="chord" id="marker-${markerId}">${escapeHtml(chordName)}</span>`;
+        html += `<span class="chord" id="marker-${markerId}" data-marker-id="${markerId}" style="cursor: pointer;" title="Klik untuk melompat latihan ke chord ini">${escapeHtml(chordName)}</span>`;
         cursor = pos + chordName.length;
     }
 
@@ -245,11 +245,12 @@ function stopHighlightLoop() {
     }
 }
 
-function startHighlightLoop(totalBeats) {
+function startHighlightLoop(totalBeats, startFromBeat = 0) {
     stopHighlightLoop();
 
     const secondsPerBeat = 60.0 / currentBpm;
-    const estimatedEndTime = engine.audioContext.currentTime + (totalBeats * secondsPerBeat) + 0.5;
+    const remainingBeats = Math.max(1, totalBeats - startFromBeat);
+    const estimatedEndTime = engine.songStartTime + (remainingBeats * secondsPerBeat) + 0.5;
 
     const tick = () => {
         const now = engine.audioContext.currentTime;
@@ -258,6 +259,17 @@ function startHighlightLoop(totalBeats) {
             stopPlayback();
             print(`Selesai diputar.`);
             return;
+        }
+
+        // Count-in visual feedback
+        if (now < engine.songStartTime && engine.countInEvents && engine.countInEvents.length > 0) {
+            const countEvent = engine.countInEvents.find((e) => now >= e.time && now < e.endTime);
+            if (countEvent) {
+                print(`Hitungan Mundur: ${countEvent.countNumber}...`);
+            }
+        } else if (now >= engine.songStartTime && now < engine.songStartTime + 0.3) {
+            const hasSongAudio = Boolean(displayData.song?.audio_url);
+            print(`Memainkan "${displayData.song.title}" pada ${currentBpm} BPM (Metronom + Chord Speech${hasSongAudio ? ' + Backing Track' : ''}).`);
         }
 
         clearAllHighlights();
@@ -279,7 +291,7 @@ function startHighlightLoop(totalBeats) {
     highlightFrame = requestAnimationFrame(tick);
 }
 
-function startPlayback() {
+function startPlayback(startFromBeat = 0) {
     if (!displayData) return;
 
     const timeline = (displayData.markers || []).map((marker) => ({
@@ -292,14 +304,20 @@ function startPlayback() {
         ? Math.max(...timeline.map((marker) => marker.beat)) + 4
         : 4;
 
-    engine.playSongTimeline(timeline, currentBpm, totalBeats, originalBpm);
+    const numerator = displayData.song?.time_signature_numerator || 4;
+
+    engine.playSongTimeline(timeline, currentBpm, totalBeats, originalBpm, numerator, startFromBeat);
     clearAllHighlights();
-    startHighlightLoop(totalBeats);
+    startHighlightLoop(totalBeats, startFromBeat);
 
     btnPlay.disabled = true;
     btnStop.disabled = false;
     const hasSongAudio = Boolean(displayData.song?.audio_url);
-    print(`Memainkan "${displayData.song.title}" pada ${currentBpm} BPM (Metronom + Chord Speech${hasSongAudio ? ' + Backing Track' : ''}).`);
+    if (startFromBeat === 0) {
+        print(`Hitungan mundur 1 birama (${numerator} ketukan)...`);
+    } else {
+        print(`Hitungan mundur 1 birama sebelum lompat ke ketukan ${startFromBeat}...`);
+    }
 }
 
 function stopPlayback() {
@@ -462,6 +480,44 @@ btnTransposeReset.addEventListener('click', async () => {
         print(`Transpose gagal: ${error.message}`);
     }
 });
+
+// ── Jump Manual via Klik Chord (§5.4) ─────────────────────────
+if (chordsheetEl) {
+    chordsheetEl.addEventListener('click', (e) => {
+        const chordEl = e.target.closest('.chord');
+        if (!chordEl) return;
+        const markerIdStr = chordEl.dataset.markerId || chordEl.id.replace('marker-', '');
+        const markerId = parseInt(markerIdStr, 10);
+        const marker = displayData?.markers?.find((m) => (m.chord_placement_id || m.id) === markerId);
+        if (marker && typeof marker.beat === 'number') {
+            startPlayback(marker.beat);
+        }
+    });
+}
+
+// ── Multi-Track Mute Controls (§5.3) ─────────────────────────
+const btnMuteMetronome = document.getElementById('mute-metronome');
+const btnMuteChord = document.getElementById('mute-chord');
+const btnMuteReference = document.getElementById('mute-reference');
+
+function toggleMute(track, btn, label) {
+    const next = !engine.isMuted(track);
+    engine.setMute(track, next);
+    btn.textContent = `${label}: ${next ? 'Mute' : 'Aktif'}`;
+    btn.classList.toggle('button-primary', next);
+    btn.classList.toggle('button-secondary', !next);
+}
+
+if (btnMuteMetronome) {
+    btnMuteMetronome.addEventListener('click', () => toggleMute('metronome', btnMuteMetronome, 'Metronom'));
+}
+if (btnMuteChord) {
+    btnMuteChord.addEventListener('click', () => toggleMute('chord', btnMuteChord, 'Chord'));
+}
+if (btnMuteReference) {
+    btnMuteReference.addEventListener('click', () => toggleMute('reference', btnMuteReference, 'Backing Track'));
+}
+
 // Jalankan auto-load saat halaman dimuat
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initPlayer);

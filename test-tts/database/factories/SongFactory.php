@@ -91,7 +91,6 @@ class SongFactory extends Factory
             $line->chordPlacements()->create([
                 'chord_id' => $chordId,
                 'position' => 0,
-                'start_time' => fake()->randomFloat(3, 0, 4),
                 'start_beat' => 0,
             ]);
         });
